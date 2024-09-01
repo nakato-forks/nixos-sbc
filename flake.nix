@@ -13,9 +13,9 @@
     _lib = import ./lib {
       inherit nixpkgs lib self;
     };
-    inherit (_lib) forAllSystems forSupportedHostSystems;
+    inherit (_lib) forAllSystems supportedBuildSystems supportedHostSystems;
 
-    mkNixosConfigurations = let
+    mkNixosConfigurations = {buildSystem ? null}: let
       devices = [
         {
           manufacturer = "bananapi";
@@ -46,7 +46,7 @@
       mkNixosConfigurations = builtins.listToAttrs (builtins.map
         (device: {
           name = "${device.manufacturer}-${device.model}";
-          value = lib.nixosSystem {
+          value = lib.nixosSystem rec {
             system =
               if device ? system
               then device.system
@@ -58,9 +58,13 @@
                 {
                   sbc.bootstrap.initialBootstrapImage = true;
                   sbc.version = "0.3";
+                  nixpkgs.hostPlatform.system = system;
                 }
               ]
-              ++ (lib.optionals (device ? extraModules) device.extraModules);
+              ++ (lib.optionals (device ? extraModules) system.extraModules)
+              ++ (lib.optional (buildSystem != null) {
+                nixpkgs.buildPlatform.system = buildSystem;
+              });
           };
         })
         devices);
@@ -75,7 +79,24 @@
         nixpkgs.legacyPackages.${system}.alejandra
     );
 
-    packages = forSupportedHostSystems (system: import ./pkgs {pkgs = nixpkgs.legacyPackages.${system};});
+    packages = forAllSystems (system:
+      (
+        if builtins.elem system supportedHostSystems
+        then (import ./pkgs {pkgs = nixpkgs.legacyPackages.${system};})
+        else {}
+      )
+      // (
+        if builtins.elem system supportedBuildSystems
+        then
+          (
+            let
+              nixosCrossConfigurations = mkNixosConfigurations {buildSystem = system;};
+            in
+              lib.mapAttrs' (name: value: lib.nameValuePair "sdImage-${name}" value.config.system.build.sdImage)
+              nixosCrossConfigurations
+          )
+        else {}
+      ));
 
     nixosModules = import ./modules;
     # deviceBuilder is an unstable API.  I'm throwing it in quickly
@@ -84,6 +105,6 @@
       rtc.ds3231 = import ./lib/devices/rtc/ds3231/create.nix;
     };
 
-    nixosConfigurations = mkNixosConfigurations;
+    nixosConfigurations = mkNixosConfigurations {};
   };
 }
